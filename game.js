@@ -29,6 +29,40 @@
   const G_BASE = 3.6, JUMP = 1.5, JUMP2 = 1.25;   // normalized (band) units
   const SLIDE_TIME = 0.5;
 
+  // ---------- seeded level generation ----------
+  // Every run is built from a 32-bit seed: the same seed always produces the
+  // exact same level (same obstacles, orbs and power-ups, in the same order).
+  // Set it in the menu (T to type, N for a fresh random one) or via URL:
+  //   index.html?seed=12345        (any number... or any word, e.g. ?seed=dragon)
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function seedFromString(s) {
+    s = String(s).trim().toLowerCase();
+    if (/^\d+$/.test(s)) return parseInt(s, 10) >>> 0;
+    let h = 0x811c9dc5; // FNV-1a hash so words work too
+    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+    return h >>> 0;
+  }
+  function randomSeedValue() { return (Date.now() ^ Math.floor(Math.random() * 0x100000000)) >>> 0; }
+  let seed = (function () {
+    try {
+      const p = new URLSearchParams(location.search).get('seed');
+      if (p && p.trim()) return seedFromString(p);
+    } catch (e) { /* ignore */ }
+    return randomSeedValue();
+  })();
+  let rng = mulberry32(seed);
+  const sRand = () => rng();                       // seeded random: level generation only
+  const srand = (a, b) => a + rng() * (b - a);
+  function setSeed(s) { seed = seedFromString(s); rng = mulberry32(seed); }
+  function newRandomSeed() { setSeed(randomSeedValue()); }
+
   // ---------- state ----------
   let W = 0, H = 0, DPR = 1;
   let lanes = null;            // array of lane objects
@@ -40,6 +74,9 @@
   let shakeT = 0, shakeMag = 0;
   let bests = [0, 0], prevBests = [0, 0];
   let stars = [], mountains = [];
+  let spawnDistSince = 0, spawnNextGap = 320;   // single shared spawner (fair 2P)
+  let seedEditing = false, seedBuffer = '';
+  let spawnLog = [];                            // level-gen log (for tests/debug)
   const justPressed = new Set();
   const particles = [];
 
@@ -258,11 +295,15 @@
     lanes = cfg.map((c, i) => ({
       frac: c,
       color: i === 0 ? COLORS.laneA : COLORS.laneB,
-      gridOff: 0, distSince: 0, nextGap: 320, entities: [],
+      gridOff: 0, entities: [],
       player: newPlayer(i),
     }));
     lanes.forEach(layoutLane);
     speed = BASE_SPEED; elapsed = 0; slowmo = 0;
+    // (Re)generate this run's level from the current seed, and reset the
+    // single shared spawner that feeds every lane identically.
+    rng = mulberry32(seed);
+    spawnDistSince = 0; spawnNextGap = 320; spawnLog.length = 0;
     bests = [loadBest(0), loadBest(1)];
     prevBests = [bests[0], bests[1]];
     particles.length = 0;
@@ -280,7 +321,8 @@
 
   window.addEventListener('keydown', e => {
     const c = e.code;
-    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(c)) e.preventDefault();
+    const k = e.key;
+    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Backspace'].includes(c)) e.preventDefault();
     // Only init/resume audio on a genuine (trusted) user gesture so the
     // browser autoplay policy is satisfied.
     if (e.isTrusted) Sfx.unlock();
@@ -293,8 +335,17 @@
     }
 
     if (state === 'menu') {
-      if (c === 'Digit1' || c === 'Numpad1' || c === 'Space' || c === 'Enter') startGame(1);
-      else if (c === 'Digit2' || c === 'Numpad2') startGame(2);
+      if (seedEditing) {
+        if (k === 'Enter') { setSeed(seedBuffer.trim() || '0'); seedEditing = false; }
+        else if (c === 'Escape') { seedEditing = false; }
+        else if (c === 'Backspace') { seedBuffer = seedBuffer.slice(0, -1); }
+        else if (k.length === 1 && /[a-zA-Z0-9]/.test(k)) { seedBuffer = (seedBuffer + k).slice(0, 16); }
+      } else {
+        if (c === 'KeyT') { seedEditing = true; seedBuffer = ''; }
+        else if (c === 'KeyN') { newRandomSeed(); }
+        else if (c === 'Digit1' || c === 'Numpad1' || c === 'Space' || c === 'Enter') startGame(1);
+        else if (c === 'Digit2' || c === 'Numpad2') startGame(2);
+      }
     } else if (state === 'playing') {
       if (c === 'KeyP' || c === 'Escape') { state = 'paused'; }
     } else if (state === 'paused') {
@@ -390,44 +441,54 @@
     drone:   { wF: 0.034, bF: 0.06, hF: 0.10, bob: 0.03 },
   };
 
-  function spawnInLane(l) {
-    l.distSince = 0;
-    const r = Math.random();
-    if (r < 0.60) {
-      spawnObstacle(l);
-      if (Math.random() < 0.45) spawnOrbArc(l);
-    } else if (r < 0.90) {
-      spawnOrbCluster(l);
-    } else {
-      spawnPower(l);
-    }
-    l.nextGap = Math.max(240, rand(speed * 0.55, speed * 1.15));
-  }
+  const POWERS = ['shield', 'magnet', 'mult', 'slowmo'];
 
-  function spawnObstacle(l) {
-    const pick = Math.random();
-    const type = pick < 0.35 ? 'barrier' : pick < 0.60 ? 'tall' : pick < 0.85 ? 'laser' : 'drone';
-    const s = OB[type];
-    l.entities.push({ kind: 'ob', type, x: W + 60, wF: s.wF, bF: s.bF, hF: s.hF, bob: s.bob || 0, phase: rand(0, 6.28) });
+  // One shared spawner drives every lane, so in 2P both players receive the
+  // exact same sequence of obstacles/orbs/power-ups (identical difficulty).
+  // All randomness comes from the seeded rng => same seed = same level.
+  function spawnWave() {
+    const r = sRand();
+    if (r < 0.60) {
+      const type = pickObstacleType();
+      const phase = srand(0, 6.28);
+      const withArc = sRand() < 0.45;
+      for (const l of lanes) { addObstacle(l, type, phase); if (withArc) addOrbArc(l); }
+      logWave({ t: type, arc: withArc });
+    } else if (r < 0.90) {
+      for (const l of lanes) addOrbCluster(l);
+      logWave({ t: 'orbs' });
+    } else {
+      const power = POWERS[Math.floor(sRand() * POWERS.length)];
+      const phase = srand(0, 6.28);
+      for (const l of lanes) addPower(l, power, phase);
+      logWave({ t: 'pow:' + power });
+    }
   }
-  function spawnOrbArc(l) {
+  function pickObstacleType() {
+    const pick = sRand();
+    return pick < 0.35 ? 'barrier' : pick < 0.60 ? 'tall' : pick < 0.85 ? 'laser' : 'drone';
+  }
+  function addObstacle(l, type, phase) {
+    const s = OB[type];
+    l.entities.push({ kind: 'ob', type, x: W + 60, wF: s.wF, bF: s.bF, hF: s.hF, bob: s.bob || 0, phase });
+  }
+  function addOrbArc(l) {
     const N = 5, spacing = 0.028 * W;
     for (let i = 0; i < N; i++) {
       l.entities.push({ kind: 'orb', x: W + 60 + 90 + i * spacing, wF: 0.020, bF: 0.22, hF: 0.035, phase: i * 0.5 });
     }
   }
-  function spawnOrbCluster(l) {
+  function addOrbCluster(l) {
     const N = 6, spacing = 0.030 * W, base = 0.18, arcH = 0.10;
     for (let i = 0; i < N; i++) {
       const bF = base + Math.sin((i / (N - 1)) * Math.PI) * arcH;
       l.entities.push({ kind: 'orb', x: W + 60 + i * spacing, wF: 0.020, bF, hF: 0.035, phase: i * 0.5 });
     }
   }
-  function spawnPower(l) {
-    const powers = ['shield', 'magnet', 'mult', 'slowmo'];
-    const power = powers[Math.floor(Math.random() * powers.length)];
-    l.entities.push({ kind: 'pow', power, x: W + 60, wF: 0.026, bF: 0.14, hF: 0.09, phase: rand(0, 6.28) });
+  function addPower(l, power, phase) {
+    l.entities.push({ kind: 'pow', power, x: W + 60, wF: 0.026, bF: 0.14, hF: 0.09, phase });
   }
+  function logWave(d) { spawnLog.push(d); if (spawnLog.length > 1000) spawnLog.shift(); }
 
   // ---------- physics & collision ----------
   function updatePhysics(l, dt) {
@@ -547,12 +608,19 @@
     }
     const eff = speed * (slowmo > 0 ? 0.55 : 1);
 
+    // One shared spawner: every lane receives exactly the same wave, so in 2P
+    // both players face identical obstacles (equally hard/easy for both).
+    if (playing) {
+      spawnDistSince += eff * dt;
+      if (spawnDistSince >= spawnNextGap) {
+        spawnWave();
+        spawnDistSince = 0;
+        spawnNextGap = Math.max(240, srand(speed * 0.55, speed * 1.15));
+      }
+    }
+
     for (const l of lanes) {
       l.gridOff += eff * dt;
-      if (playing && l.player.alive) {
-        l.distSince += eff * dt;
-        if (l.distSince >= l.nextGap) spawnInLane(l);
-      }
       for (const e of l.entities) e.x -= eff * dt;
       // magnet pulls orbs toward the runner
       const p = l.player;
@@ -908,12 +976,28 @@
     txt(t, W / 2, H * 0.24, { size: Math.min(96, W * 0.11), color: '#fff', glow: 40, glowColor: COLORS.horizon, spacing: 10 });
     txt('A  S Y N T H W A V E   R U N N E R', W / 2, H * 0.24 + Math.min(64, W * 0.07), { size: 16, color: COLORS.laneA, glow: 12, spacing: 4 });
 
-    const cy = H * 0.5;
+    const cy = H * 0.42;
     txt('PRESS  1  FOR  SOLO', W / 2, cy - 10, { size: 30, color: COLORS.laneA, glow: 20 });
-    txt('PRESS  2  FOR  TWO  PLAYERS', W / 2, cy + 40, { size: 30, color: COLORS.laneB, glow: 20 });
+    txt('PRESS  2  FOR  TWO  PLAYERS', W / 2, cy + 38, { size: 30, color: COLORS.laneB, glow: 20 });
+
+    // ---- seed ----
+    if (seedEditing) {
+      const bw2 = Math.min(440, W * 0.7), bx2 = W / 2 - bw2 / 2;
+      ctx.save();
+      ctx.fillStyle = 'rgba(8,3,20,0.85)';
+      ctx.strokeStyle = COLORS.laneA; ctx.lineWidth = 2; ctx.shadowColor = COLORS.laneA; ctx.shadowBlur = 12;
+      roundRect(bx2, cy + 62, bw2, 40, 8); ctx.fill(); ctx.stroke();
+      ctx.restore();
+      const cursor = (Math.floor(worldTime * 2.5) % 2 === 0) ? '▌' : ' ';
+      txt('SEED  ' + seedBuffer + cursor, W / 2, cy + 82, { size: 20, color: '#fff', glow: 8, spacing: 2 });
+      txt('ENTER — SET    ·    ESC — CANCEL', W / 2, cy + 118, { size: 12, color: 'rgba(255,255,255,0.6)', spacing: 1 });
+    } else {
+      txt('SEED  ' + seed, W / 2, cy + 74, { size: 18, color: COLORS.orb, glow: 10, spacing: 2 });
+      txt('T — TYPE A SEED    ·    N — NEW RANDOM SEED    ·    SAME SEED = SAME LEVEL', W / 2, cy + 100, { size: 11, color: 'rgba(255,255,255,0.5)', spacing: 1 });
+    }
 
     // controls card
-    const bw = Math.min(560, W * 0.8), bx = W / 2 - bw / 2, by = cy + 84;
+    const bw = Math.min(560, W * 0.8), bx = W / 2 - bw / 2, by = cy + 132;
     ctx.save();
     ctx.fillStyle = 'rgba(8,3,20,0.6)';
     ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth = 1;
@@ -928,7 +1012,7 @@
 
     const blink = 0.5 + 0.5 * Math.sin(worldTime * 4);
     ctx.save(); ctx.globalAlpha = blink;
-    txt('JUMP OVER BLOCKS  ·  SLIDE UNDER LASERS  ·  CHAIN ORBS', W / 2, H * 0.92, { size: 13, color: '#ffe93d', glow: 10, spacing: 2 });
+    txt('JUMP OVER BLOCKS  ·  SLIDE UNDER LASERS  ·  CHAIN ORBS', W / 2, H * 0.94, { size: 13, color: '#ffe93d', glow: 10, spacing: 2 });
     ctx.restore();
   }
 
@@ -969,6 +1053,9 @@
         align: 'left', size: 14, color: newBest ? '#ffe93d' : 'rgba(255,255,255,0.5)', glow: newBest ? 12 : 0,
       });
     });
+
+    txt('SEED  ' + seed, W / 2, H * 0.62, { size: 15, color: COLORS.orb, glow: 8, spacing: 2 });
+    txt('SAME SEED = SAME LEVEL — SHARE IT TO CHALLENGE A FRIEND', W / 2, H * 0.655, { size: 11, color: 'rgba(255,255,255,0.45)', spacing: 1 });
 
     const blink = 0.5 + 0.5 * Math.sin(worldTime * 4);
     ctx.save(); ctx.globalAlpha = blink;
@@ -1022,6 +1109,19 @@
       ctx.restore();
     }
   }
+
+  // ---------- debug/test hook (harmless in normal play) ----------
+  window.__neonDash = {
+    getSeed: () => seed,
+    getState: () => state,
+    getMode: () => mode_,
+    getSpeed: () => speed,
+    getSpawnLog: () => spawnLog.slice(0, 200),
+    getLanes: () => (lanes || []).map(l => ({
+      alive: l.player.alive,
+      entities: l.entities.map(e => ({ k: e.kind, t: e.type || e.power || '', x: Math.round(e.x) })),
+    })),
+  };
 
   // ---------- loop ----------
   function loop(ts) {
