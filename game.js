@@ -118,7 +118,7 @@
 
   // ---------- audio (WebAudio synth, no files) ----------
   const Sfx = (() => {
-    let ac = null, master = null, muted = false, musicTimer = null, stepI = 0, nextNote = 0;
+    let ac = null, master = null, muted = false, musicTimer = null, musicTrack = null, stepI = 0, nextNote = 0;
     // AudioContext is only created on a real user gesture (see input handler),
     // which satisfies the browser autoplay policy and avoids the "not allowed to
     // start" warning. Every sound call no-ops until unlock() has run.
@@ -160,21 +160,26 @@
     const midi = m => 440 * Math.pow(2, (m - 69) / 12);
     const bass = [45, 45, 52, 45, 48, 48, 55, 48, 43, 43, 50, 43, 47, 47, 54, 47];
     const chords = [[57, 60, 64], [53, 57, 60], [50, 53, 57], [55, 59, 62]];
-    function schedBass(m, t0, dur) {
+    // Menu theme: the same Am–F–C–G loop, slower (84 BPM) and more spacious —
+    // soft half-time kick, sparse 8th-note bass and a dreamy 8th-note arpeggio.
+    const menuRoots = [45, 41, 48, 43];              // A2 F2 C3 G2, one per bar
+    const menuBass8 = [0, 0, 7, 0];                  // 8th-note offsets: root root 5th root
+    const arp8 = [0, 3, 7, 12, 15, 19, 15, 12];      // r 3 5 R 3' 5' 3' R'
+    function schedBass(m, t0, dur, vol = 0.12) {
       const o = ac.createOscillator(), g = ac.createGain(), f = ac.createBiquadFilter();
       o.type = 'sawtooth'; o.frequency.value = midi(m);
       f.type = 'lowpass'; f.frequency.value = 620;
       o.connect(f); f.connect(g); g.connect(master);
       g.gain.setValueAtTime(0.0001, t0);
-      g.gain.exponentialRampToValueAtTime(0.12, t0 + 0.005);
+      g.gain.exponentialRampToValueAtTime(vol, t0 + 0.005);
       g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
       o.start(t0); o.stop(t0 + dur + 0.03);
     }
-    function schedKick(t0) {
+    function schedKick(t0, vol = 0.5) {
       const o = ac.createOscillator(), g = ac.createGain();
       o.type = 'sine'; o.frequency.setValueAtTime(150, t0);
       o.frequency.exponentialRampToValueAtTime(45, t0 + 0.12);
-      g.gain.setValueAtTime(0.5, t0); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.18);
+      g.gain.setValueAtTime(vol, t0); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.18);
       o.connect(g); g.connect(master); o.start(t0); o.stop(t0 + 0.2);
     }
     function schedPad(chord, t0, dur) {
@@ -189,22 +194,44 @@
         o.start(t0); o.stop(t0 + dur + 0.05);
       });
     }
-    function startMusic() {
+    function schedArp(m, t0, dur) {
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = 'triangle'; o.frequency.value = midi(m);
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(0.055, t0 + 0.004);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      o.connect(g); g.connect(master); o.start(t0); o.stop(t0 + dur + 0.02);
+    }
+    // track: 'game' (driving 104 BPM action loop) or 'menu' (mellow 84 BPM).
+    // Idempotent per track: calling it again for the playing track is a no-op.
+    function startMusic(track = 'game') {
+      if (musicTimer && musicTrack === track) return;
       stopMusic();
       if (!ac || muted) return;
+      musicTrack = track;
       stepI = 0; nextNote = now() + 0.1;
-      const stepT = (60 / 104) / 4;
+      const stepT = (60 / (track === 'menu' ? 84 : 104)) / 4;
       musicTimer = setInterval(() => {
         while (nextNote < now() + 0.12) {
           const s = stepI % 16;
-          schedBass(bass[s], nextNote, stepT * 0.95);
-          if (s % 4 === 0) schedKick(nextNote);
-          if (s === 0) schedPad(chords[(stepI / 16 | 0) % 4], nextNote, stepT * 16);
+          if (track === 'menu') {
+            const bar = (stepI / 16 | 0) % 4;
+            const root = menuRoots[bar];
+            schedBass(root + menuBass8[s >> 2], nextNote, stepT * 1.7, 0.10);
+            if (s % 2 === 0) schedArp(root + 12 + arp8[s >> 1], nextNote, stepT * 0.9);
+            if (s === 0 || s === 8) schedKick(nextNote, 0.3);
+            if (s === 4 || s === 12) noise(0.05, 0.035, 6000, nextNote - now());
+            if (s === 0) schedPad(chords[bar], nextNote, stepT * 16);
+          } else {
+            schedBass(bass[s], nextNote, stepT * 0.95);
+            if (s % 4 === 0) schedKick(nextNote);
+            if (s === 0) schedPad(chords[(stepI / 16 | 0) % 4], nextNote, stepT * 16);
+          }
           stepI++; nextNote += stepT;
         }
       }, 25);
     }
-    function stopMusic() { if (musicTimer) { clearInterval(musicTimer); musicTimer = null; } }
+    function stopMusic() { if (musicTimer) { clearInterval(musicTimer); musicTimer = null; musicTrack = null; } }
     return {
       unlock,
       toggle() { muted = !muted; if (master) master.gain.value = muted ? 0 : 0.5; return muted; },
@@ -218,6 +245,8 @@
       death() { noise(0.5, 0.5, 800); [330, 262, 196, 131].forEach((f, i) => tone(f, 0.25, 'sawtooth', 0.24, -40, i * 0.09)); },
       over() { [392, 330, 262, 196].forEach((f, i) => tone(f, 0.3, 'triangle', 0.2, -20, i * 0.12)); },
       startMusic, stopMusic,
+      getTrack: () => musicTrack,
+      isPlaying: () => !!musicTimer,
     };
   })();
 
@@ -309,7 +338,7 @@
     particles.length = 0;
     state = 'countdown'; countdownT = 3.0; goT = 0;
     buildBackground();
-    Sfx.startMusic();
+    Sfx.startMusic('game');
   }
 
   // ---------- input ----------
@@ -324,14 +353,21 @@
     const k = e.key;
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Backspace'].includes(c)) e.preventDefault();
     // Only init/resume audio on a genuine (trusted) user gesture so the
-    // browser autoplay policy is satisfied.
-    if (e.isTrusted) Sfx.unlock();
+    // browser autoplay policy is satisfied. That first key press on the title
+    // (or game-over) screen is also when the menu theme may begin.
+    if (e.isTrusted) {
+      Sfx.unlock();
+      if (state === 'menu' || state === 'gameover') Sfx.startMusic('menu');
+    }
     if (e.repeat) return;
     justPressed.add(c);
 
     if (c === 'KeyM') {
       const m = Sfx.toggle();
-      if (!m && (state === 'playing' || state === 'countdown')) Sfx.startMusic();
+      if (!m) {
+        if (state === 'playing' || state === 'countdown') Sfx.startMusic('game');
+        else if (state === 'menu' || state === 'gameover') Sfx.startMusic('menu');
+      }
     }
 
     if (state === 'menu') {
@@ -352,7 +388,7 @@
       if (c === 'KeyP' || c === 'Escape') { state = 'playing'; }
     } else if (state === 'gameover') {
       if (c === 'Space' || c === 'Enter') startGame(mode_);
-      else if (c === 'KeyM' || c === 'Escape') { state = 'menu'; Sfx.stopMusic(); }
+      else if (c === 'KeyM' || c === 'Escape') { state = 'menu'; Sfx.startMusic('menu'); }
     }
   });
 
@@ -658,6 +694,8 @@
       saveBests();
       Sfx.stopMusic();
       Sfx.over();
+      // Let the game-over jingle finish, then settle into the menu theme.
+      setTimeout(() => { if (state === 'gameover') Sfx.startMusic('menu'); }, 900);
     }
   }
 
@@ -1121,6 +1159,13 @@
       alive: l.player.alive,
       entities: l.entities.map(e => ({ k: e.kind, t: e.type || e.power || '', x: Math.round(e.x) })),
     })),
+    sfx: {
+      unlock: () => Sfx.unlock(),
+      start: t => Sfx.startMusic(t),
+      stop: () => Sfx.stopMusic(),
+      getTrack: () => Sfx.getTrack(),
+      isPlaying: () => Sfx.isPlaying(),
+    },
   };
 
   // ---------- loop ----------

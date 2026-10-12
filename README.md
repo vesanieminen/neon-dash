@@ -8,6 +8,10 @@ install — it's just three files.
 Open `index.html` in any modern browser (double-click it, or drag it into a
 Chrome/Firefox/Safari/Edge window). That's it.
 
+There's nothing to install for the sound either: the mellow menu theme on the
+title screen and the driving action track during a run are both synthesized
+live in the browser. Press `M` to mute.
+
 ## Controls
 
 | Action          | Solo            | Player 1 | Player 2 |
