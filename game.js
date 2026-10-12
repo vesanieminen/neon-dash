@@ -388,7 +388,7 @@
       if (c === 'KeyP' || c === 'Escape') { state = 'playing'; }
     } else if (state === 'gameover') {
       if (c === 'Space' || c === 'Enter') startGame(mode_);
-      else if (c === 'KeyM' || c === 'Escape') { state = 'menu'; Sfx.startMusic('menu'); }
+      else if (c === 'Escape') { state = 'menu'; Sfx.startMusic('menu'); }
     }
   });
 
@@ -1097,7 +1097,7 @@
 
     const blink = 0.5 + 0.5 * Math.sin(worldTime * 4);
     ctx.save(); ctx.globalAlpha = blink;
-    txt('SPACE — RESTART      ·      M — MENU', W / 2, H * 0.78, { size: 18, color: '#fff', spacing: 2 });
+    txt('SPACE — RESTART      ·      ESC — MENU', W / 2, H * 0.78, { size: 18, color: '#fff', spacing: 2 });
     ctx.restore();
   }
 
@@ -1107,7 +1107,7 @@
     ctx.fillRect(0, 0, W, H);
     ctx.restore();
     txt('PAUSED', W / 2, H * 0.45, { size: 56, color: '#fff', glow: 30, spacing: 10 });
-    txt('P to resume  ·  M to mute', W / 2, H * 0.45 + 52, { size: 16, color: 'rgba(255,255,255,0.7)' });
+    txt('P or ESC to resume  ·  M to mute', W / 2, H * 0.45 + 52, { size: 16, color: 'rgba(255,255,255,0.7)' });
   }
 
   // ---------- main draw ----------
@@ -1165,6 +1165,7 @@
       stop: () => Sfx.stopMusic(),
       getTrack: () => Sfx.getTrack(),
       isPlaying: () => Sfx.isPlaying(),
+      isMuted: () => Sfx.isMuted(),
     },
   };
 

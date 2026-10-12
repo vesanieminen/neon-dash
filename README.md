@@ -22,7 +22,9 @@ live in the browser. Press `M` to mute.
 - **Double-tap jump** = double jump.
 - **Hold jump** = jump higher (release early to cut the jump short).
 - Press **`1`** on the title screen for Solo, **`2`** for Two Players.
-- **`M`** mute, **`P` / `Esc`** pause, **`Space`** restart after a game over.
+- **`M`** mutes (works anywhere). **`P` / `Esc`** pause and resume. `Esc` is
+  also the back key — it cancels seed entry and takes you to the menu after a
+  game over. **`Space`** restarts after a game over.
 - **`T`** / **`N`** on the title screen: type / randomize the level seed.
 
 ## How it works
