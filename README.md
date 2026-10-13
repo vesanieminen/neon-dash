@@ -3,6 +3,10 @@
 A synthwave endless runner for the browser. No build step, no dependencies, no
 install — it's just three files.
 
+![NEON DASH title screen](screenshot.png)
+
+**Play it online: <https://vesanieminen.github.io/neon-dash/>**
+
 ## Play
 
 Open `index.html` in any modern browser (double-click it, or drag it into a
